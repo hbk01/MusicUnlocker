@@ -1,0 +1,9 @@
+# IDE configure
+.idea
+
+# Runtime Created Folder
+locked
+unlocked
+
+# Unlocker executeable.
+um.exe
