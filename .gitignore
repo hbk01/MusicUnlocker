@@ -2,8 +2,9 @@
 .idea
 
 # Runtime Created Folder
-locked
-unlocked
+build/
+locked/
+unlocked/
 
 # Unlocker executeable.
 um.exe
