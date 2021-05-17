@@ -1,9 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"golang.org/x/net/proxy"
 	"io"
@@ -19,6 +21,9 @@ var (
 	client = &http.Client{}
 	socks  = flag.String("proxy", "", "socks5 proxy.")
 	token  = flag.String("token", "", "your telegram bot token")
+	dbname = flag.String("dbname", "", "mysql database username")
+	dbpswd = flag.String("dbpswd", "", "mysql database password")
+	dbhost = flag.String("dbhost", "localhost:3306", "mysql database address, like addr[:host]")
 )
 
 func main() {
@@ -42,6 +47,14 @@ func main() {
 		log.Panic(err)
 	}
 	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	dataSourceName := *dbname + ":" + *dbpswd + "@tcp(" + *dbhost + ")/music_unlock?parseTime=true"
+	log.Println("Database Source: " + dataSourceName)
+	db, err := sql.Open("mysql", dataSourceName)
+	if err != nil {
+		log.Println("连接数据库失败：" + err.Error())
+	}
+	defer db.Close()
 
 	// 登录完成 ============================================================
 
@@ -82,8 +95,35 @@ func main() {
 			sendMsg(bot, chatId, "开始解密文件")
 			unlockedFile := unlock(*file)
 			sendFile(bot, chatId, unlockedFile)
+
+			// TODO save information into databases
+			err = db.Ping()
+			if err == nil {
+				username := update.Message.Chat.UserName
+				displayName := update.Message.Chat.FirstName + update.Message.Chat.LastName
+				unlockFileName := doc.FileName
+				unlockFileSize := doc.FileSize
+				time := update.Message.Time().Format("2006-01-02 15:04:05")
+
+				stmt, err := db.Prepare("insert into logs(username, display_name, time, unlock_file_name, unlock_file_size) values (?, ?, ?, ?, ?);")
+				if err != nil {
+					log.Println(err.Error())
+				}
+				if stmt == nil {
+					panic("stmt is nil")
+				}
+				_, err = stmt.Exec(username, displayName, time, unlockFileName, unlockFileSize)
+				if err != nil {
+					log.Println(err.Error())
+				}
+				_ = stmt.Close()
+			} else {
+				log.Println(err.Error())
+			}
+
 		}
 
+		// if the msg is a command.
 		if update.Message.IsCommand() {
 			//log.Printf("[%s] say [%s]\n", update.Message.From.UserName, update.Message.Text)
 			switch update.Message.Command() {
@@ -105,6 +145,7 @@ func main() {
 			continue
 		}
 
+		// if the msg is a text.
 		if update.Message.Text != "" {
 			sendMsg(bot, chatId, "请不要调戏本机器人，服务器很贵的好不啦！")
 			continue
@@ -152,15 +193,7 @@ func unlock(i os.File) string {
 	}
 	output := fmt.Sprintf("%s", out)
 	temp := strings.Split(output, "\"")
-	//
-	//for a := range temp {
-	//	fmt.Println(a, " -- ", temp[a])
-	//}
 	unlockedFileName := temp[len(temp)-2]
-	//open, err := os.Open(unlockedFileName)
-	//if err != nil {
-	//	log.Printf("Open unlocked file %s failed. %s\n", unlockedFileName, err.Error())
-	//}
 	return unlockedFileName
 }
 
@@ -175,9 +208,9 @@ func downloadTgFile(url, filename string) (*os.File, error) {
 		if err != nil {
 			log.Printf("Create 'locked' folder failed: %s", err.Error())
 		}
-	} else {
-		filename = "locked/" + filename
 	}
+
+	filename = "locked/" + filename
 
 	log.Printf("Download %s from %s\n", filename, url)
 	// Create blank file
