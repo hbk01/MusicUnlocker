@@ -5,9 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/go-telegram-bot-api/telegram-bot-api"
-	"golang.org/x/net/proxy"
 	"io"
 	"log"
 	"net/http"
@@ -15,15 +12,20 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	_ "github.com/go-sql-driver/mysql"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"golang.org/x/net/proxy"
 )
 
 var (
 	client = &http.Client{}
-	socks  = flag.String("proxy", "", "socks5 proxy.")
+	socks  = flag.String("proxy", "socks5://localhost:8888", "set proxy")
 	token  = flag.String("token", "", "your telegram bot token")
-	dbname = flag.String("dbname", "", "mysql database username")
-	dbpswd = flag.String("dbpswd", "", "mysql database password")
-	dbhost = flag.String("dbhost", "localhost:3306", "mysql database address, like addr[:host]")
+	debug  = flag.Bool("debug", false, "enable debug output")
+	dbname = flag.String("dbname", "root", "mysql database username")
+	dbpswd = flag.String("dbpswd", "123456", "mysql database password")
+	dbhost = flag.String("dbhost", "localhost:3306", "mysql database address")
 )
 
 func main() {
@@ -46,10 +48,10 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	log.Printf("Login as: %s\n", bot.Self.UserName)
 
 	dataSourceName := *dbname + ":" + *dbpswd + "@tcp(" + *dbhost + ")/music_unlock?parseTime=true"
-	log.Println("Database Source: " + dataSourceName)
+	log.Println("Database source: " + dataSourceName)
 	db, err := sql.Open("mysql", dataSourceName)
 	if err != nil {
 		log.Println("连接数据库失败：" + err.Error())
@@ -58,12 +60,12 @@ func main() {
 
 	// 登录完成 ============================================================
 
-	bot.Debug = true
+	bot.Debug = *debug
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	// 接收消息 ===================================================
-	updates, err := bot.GetUpdatesChan(u)
+	updates, _ := bot.GetUpdatesChan(u)
 	for update := range updates {
 		chatId := update.Message.Chat.ID
 		// ignore any non-Message Updates
@@ -74,7 +76,10 @@ func main() {
 		// if the msg is a file.
 		if update.Message.Document != nil {
 			doc := update.Message.Document
+			log.Printf("Recv document: %s\n", doc.FileName)
 			sendErrorMsg(bot, chatId, "收到文件", errors.New(doc.FileName))
+
+			// TODO check the file name(only the encypted music file can to next step.)
 
 			if doc.FileSize >= 20*1024*1024 {
 				sendMsg(bot, chatId, "文件大于20MB，电报暂不允许机器人接收超过20MB的文件")
@@ -125,7 +130,7 @@ func main() {
 
 		// if the msg is a command.
 		if update.Message.IsCommand() {
-			//log.Printf("[%s] say [%s]\n", update.Message.From.UserName, update.Message.Text)
+			log.Printf("Recv command: %s\n", update.Message.Command())
 			switch update.Message.Command() {
 			case "start":
 				sendMsg(bot, chatId, "发送被加密的文件，稍后会把解密后的文件发回。")
@@ -137,7 +142,7 @@ func main() {
 					"非常感谢以上的开源项目！"
 				sendMsg(bot, chatId, msg)
 			case "about":
-				msg := "本机器人项目开源在 [github](https://github.com/hbk01/MusicUnlocker)"
+				msg := "本机器人项目开源在 [Github](https://github.com/hbk01/MusicUnlocker)"
 				sendMsg(bot, chatId, msg)
 			default:
 				sendMsg(bot, chatId, "这个命令我不认识，你是不是在玩我？")
@@ -147,6 +152,7 @@ func main() {
 
 		// if the msg is a text.
 		if update.Message.Text != "" {
+			log.Printf("Recv msg: %s\n", update.Message.Text)
 			sendMsg(bot, chatId, "请不要调戏本机器人，服务器很贵的好不啦！")
 			continue
 		}
@@ -158,6 +164,7 @@ func sendMsg(api *tgbotapi.BotAPI, chatID int64, text string) {
 	msg.ParseMode = "MarkdownV2"
 	msg.DisableWebPagePreview = true
 	_, err := api.Send(msg)
+	log.Printf("Send msg to %d: %s\n", msg.ChatID, msg.Text)
 	if err != nil {
 		log.Printf("Send message failed. %s", err.Error())
 	}
@@ -167,6 +174,7 @@ func sendErrorMsg(api *tgbotapi.BotAPI, chatID int64, text string, err error) {
 	msg := tgbotapi.NewMessage(chatID, text+" "+err.Error())
 	msg.DisableWebPagePreview = true
 	_, err = api.Send(msg)
+	log.Printf("Send error msg to %d: %s\n", msg.ChatID, msg.Text)
 	if err != nil {
 		log.Printf("Send error message failed. %s", err.Error())
 	}
@@ -175,6 +183,7 @@ func sendErrorMsg(api *tgbotapi.BotAPI, chatID int64, text string, err error) {
 func sendFile(api *tgbotapi.BotAPI, chatID int64, file string) {
 	msg := tgbotapi.NewAudioUpload(chatID, file)
 	_, err := api.Send(msg)
+	log.Printf("Send file to %d: %s\n", msg.ChatID, file)
 	if err != nil {
 		log.Printf("Send file failed. %s", err.Error())
 	}
@@ -212,7 +221,7 @@ func downloadTgFile(url, filename string) (*os.File, error) {
 
 	filename = "locked/" + filename
 
-	log.Printf("Download %s from %s\n", filename, url)
+	log.Printf("Download file: %s\n", filename)
 	// Create blank file
 	file, err := os.Create(filename)
 	if err != nil {
@@ -226,8 +235,22 @@ func downloadTgFile(url, filename string) (*os.File, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	size, err := io.Copy(file, resp.Body)
+	size, _ := io.Copy(file, resp.Body)
 	defer file.Close()
-	fmt.Printf("Downloaded a file %s with size %d\n", filename, size)
+	log.Printf("Downloaded: %s, Size: %s\n", filename, FormatSize(size))
 	return file, nil
+}
+
+func FormatSize(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %ciB",
+		float64(size)/float64(div), "KMGTPE"[exp])
 }
